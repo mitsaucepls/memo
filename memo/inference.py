@@ -22,7 +22,7 @@ logger = logging.getLogger("memo")
 logger.setLevel(logging.INFO)
 
 
-def parse_args():
+def parse_args(cli_args=None):
     parser = argparse.ArgumentParser(description="Inference script for MEMO")
 
     parser.add_argument("--config", type=str, default="configs/inference.yaml")
@@ -31,12 +31,12 @@ def parse_args():
     parser.add_argument("--output_dir", type=str)
     parser.add_argument("--seed", type=int, default=42)
 
-    return parser.parse_args()
+    return parser.parse_args(cli_args)
 
 
-def main():
+def main(args=None):
     # Parse arguments
-    args = parse_args()
+    args = parse_args(args)
     input_image_path = args.input_image
     input_audio_path = args.input_audio
     if "wav" not in input_audio_path:
