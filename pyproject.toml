@@ -38,7 +38,6 @@ dependencies = [
     'pillow>=10.4.0',
     'scikit-learn>=1.5.2',
     'scipy>=1.14.1',
-    'setuptools',
     'torch==2.5.1',
     'torchaudio==2.5.1',
     'torchvision==0.20.1',
@@ -51,8 +50,11 @@ dependencies = [
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+py-modules = ["inference", "finetune"]
+
 [tool.setuptools.packages.find]
-include = ["memo", "memo.*", "inference.py"]
+include = ["memo", "memo.*"]
 
 [tool.ruff]
 line-length = 119
