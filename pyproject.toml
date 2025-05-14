@@ -50,11 +50,8 @@ dependencies = [
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-py-modules = ["inference", "finetune"]
-
 [tool.setuptools.packages.find]
-include = ["memo", "memo.*"]
+include = [".*"]
 
 [tool.ruff]
 line-length = 119
