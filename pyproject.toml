@@ -51,7 +51,10 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["memo"]
+packages = { find = {} }
+
+[tool.setuptools.packages.find]
+include = ["memo", "memo.*"]
 
 [tool.ruff]
 line-length = 119
