@@ -5,7 +5,7 @@ num_init_past_frames: 4  # Reduced
 num_past_frames: 4  # Reduced
 inference_steps: 10  # Reduced for memory safety
 cfg_scale: 3.5
-weight_dtype: fp16  # Changed from bf16 to fp16 for less memory
+weight_dtype: bf16  # Keep bf16 for numerical stability
 enable_xformers_memory_efficient_attention: true
 
 # Memory management options - CHUNKED GPU PROCESSING

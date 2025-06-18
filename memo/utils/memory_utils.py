@@ -80,16 +80,16 @@ class MemoryManager:
                 
         except torch.cuda.OutOfMemoryError as e:
             logger.error(f"OOM while loading {name} to GPU: {e}")
-            # Force cleanup and try again with lower precision
+            # Force cleanup and try again
             self.clear_memory()
             logger.info(f"Retrying {name} with emergency cleanup...")
             try:
                 model = self.models[name]
-                model.to(device=device, dtype=torch.float16)  # Force fp16 as fallback
+                model.to(device=device, dtype=dtype if dtype else model.dtype)  # Keep original dtype
                 self.model_locations[name] = "gpu"
-                logger.info(f"Successfully loaded {name} with fp16 fallback")
+                logger.info(f"Successfully loaded {name} after cleanup")
             except Exception as e2:
-                logger.error(f"Failed to load {name} even with fallback: {e2}")
+                logger.error(f"Failed to load {name} even with cleanup: {e2}")
                 raise e  # Re-raise original OOM error
     
     def auto_offload_if_needed(self):
