@@ -126,14 +126,33 @@ class VideoPipeline(DiffusionPipeline):
         video_length = latents.shape[2]
         latents = 1 / 0.18215 * latents
         latents = rearrange(latents, "b c f h w -> (b f) c h w")
+        
+        # Process frames in smaller chunks to save memory
+        chunk_size = 2  # Process 2 frames at a time to reduce memory usage
         video = []
-        for frame_idx in range(latents.shape[0]):
-            video.append(self.vae.decode(latents[frame_idx : frame_idx + 1]).sample)
+        
+        for start_idx in range(0, latents.shape[0], chunk_size):
+            end_idx = min(start_idx + chunk_size, latents.shape[0])
+            latent_chunk = latents[start_idx:end_idx]
+            
+            # Clear cache before processing each chunk
+            if hasattr(self, 'memory_manager') and self.memory_manager:
+                self.memory_manager.clear_memory()
+            
+            with torch.no_grad():
+                video_chunk = self.vae.decode(latent_chunk).sample
+                video.append(video_chunk.cpu())  # Move to CPU immediately
+                
+            # Clear GPU tensors immediately
+            del video_chunk, latent_chunk
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        
         video = torch.cat(video)
         video = rearrange(video, "(b f) c h w -> b c f h w", f=video_length)
         video = (video / 2 + 0.5).clamp(0, 1)
         # we always cast to float32 as this does not cause significant overhead and is compatible with bfloa16
-        video = video.cpu().float().numpy()
+        video = video.float().numpy()
         return video
 
     @torch.no_grad()
@@ -174,19 +193,10 @@ class VideoPipeline(DiffusionPipeline):
 
         # prepare clip image embeddings
         clip_image_embeds = face_emb
-        
-        # Ensure image_proj is on the right device
-        if hasattr(self, 'memory_manager') and self.memory_manager.enable_offload:
-            # Use memory manager to ensure model is on GPU
-            with self.memory_manager.model_context("image_proj", device, clip_image_embeds.dtype) as image_proj_model:
-                clip_image_embeds = clip_image_embeds.to(image_proj_model.device, image_proj_model.dtype)
-                encoder_hidden_states = image_proj_model(clip_image_embeds)
-                uncond_encoder_hidden_states = image_proj_model(torch.zeros_like(clip_image_embeds))
-        else:
-            # Standard path
-            clip_image_embeds = clip_image_embeds.to(self.image_proj.device, self.image_proj.dtype)
-            encoder_hidden_states = self.image_proj(clip_image_embeds)
-            uncond_encoder_hidden_states = self.image_proj(torch.zeros_like(clip_image_embeds))
+        clip_image_embeds = clip_image_embeds.to(self.image_proj.device, self.image_proj.dtype)
+
+        encoder_hidden_states = self.image_proj(clip_image_embeds)
+        uncond_encoder_hidden_states = self.image_proj(torch.zeros_like(clip_image_embeds))
 
         if do_classifier_free_guidance:
             encoder_hidden_states = torch.cat([uncond_encoder_hidden_states, encoder_hidden_states], dim=0)
@@ -207,17 +217,30 @@ class VideoPipeline(DiffusionPipeline):
         # Prepare extra step kwargs.
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
-        # Prepare ref image latents
+        # Prepare ref image latents with chunked processing
         ref_image_tensor = rearrange(ref_image, "b f c h w -> (b f) c h w")
         ref_image_tensor = self.ref_image_processor.preprocess(
             ref_image_tensor, height=height, width=width
         )  # (bs, c, width, height)
         ref_image_tensor = ref_image_tensor.to(dtype=self.vae.dtype, device=self.vae.device)
-        # To save memory on GPUs like RTX 4090, we encode each frame separately
-        # ref_image_latents = self.vae.encode(ref_image_tensor).latent_dist.mean
+        
+        # Process reference images in chunks to save memory
         ref_image_latents = []
-        for frame_idx in range(ref_image_tensor.shape[0]):
-            ref_image_latents.append(self.vae.encode(ref_image_tensor[frame_idx : frame_idx + 1]).latent_dist.mean)
+        chunk_size = 2  # Process 2 frames at a time
+        
+        for start_idx in range(0, ref_image_tensor.shape[0], chunk_size):
+            end_idx = min(start_idx + chunk_size, ref_image_tensor.shape[0])
+            ref_chunk = ref_image_tensor[start_idx:end_idx]
+            
+            with torch.no_grad():
+                latent_chunk = self.vae.encode(ref_chunk).latent_dist.mean
+                ref_image_latents.append(latent_chunk)
+                
+            # Clear cache after each chunk
+            del ref_chunk, latent_chunk
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
         ref_image_latents = torch.cat(ref_image_latents, dim=0)
 
         ref_image_latents = ref_image_latents * 0.18215  # (b, 4, h, w)
@@ -234,23 +257,12 @@ class VideoPipeline(DiffusionPipeline):
                 t = timesteps[i]
                 # Forward reference image
                 if i == 0:
-                    if hasattr(self, 'memory_manager') and self.memory_manager.enable_offload:
-                        # Use memory manager to ensure reference_net is on GPU
-                        with self.memory_manager.model_context("reference_net", device, ref_image_latents.dtype) as ref_net:
-                            ref_features = ref_net(
-                                ref_image_latents.repeat((2 if do_classifier_free_guidance else 1), 1, 1, 1),
-                                torch.zeros_like(t),
-                                encoder_hidden_states=encoder_hidden_states,
-                                return_dict=False,
-                            )
-                    else:
-                        # Standard path
-                        ref_features = self.reference_net(
-                            ref_image_latents.repeat((2 if do_classifier_free_guidance else 1), 1, 1, 1),
-                            torch.zeros_like(t),
-                            encoder_hidden_states=encoder_hidden_states,
-                            return_dict=False,
-                        )
+                    ref_features = self.reference_net(
+                        ref_image_latents.repeat((2 if do_classifier_free_guidance else 1), 1, 1, 1),
+                        torch.zeros_like(t),
+                        encoder_hidden_states=encoder_hidden_states,
+                        return_dict=False,
+                    )
 
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
