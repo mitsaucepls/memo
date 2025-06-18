@@ -57,7 +57,7 @@ class MemoryManager:
             gc.collect()
     
     def load_model_to_gpu(self, name: str, device: str = "cuda", dtype: Optional[torch.dtype] = None):
-        """Move a specific model to GPU"""
+        """Move a specific model to GPU with error handling"""
         if name not in self.models:
             logger.warning(f"Model {name} not registered")
             return
@@ -65,13 +65,32 @@ class MemoryManager:
         if self.model_locations[name] == "gpu":
             return  # Already on GPU
             
-        logger.info(f"Loading {name} to GPU")
-        model = self.models[name]
-        if dtype:
-            model.to(device=device, dtype=dtype)
-        else:
-            model.to(device)
-        self.model_locations[name] = "gpu"
+        try:
+            logger.info(f"Loading {name} to GPU")
+            model = self.models[name]
+            if dtype:
+                model.to(device=device, dtype=dtype)
+            else:
+                model.to(device)
+            self.model_locations[name] = "gpu"
+            
+            # Clear cache after loading
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
+        except torch.cuda.OutOfMemoryError as e:
+            logger.error(f"OOM while loading {name} to GPU: {e}")
+            # Force cleanup and try again with lower precision
+            self.clear_memory()
+            logger.info(f"Retrying {name} with emergency cleanup...")
+            try:
+                model = self.models[name]
+                model.to(device=device, dtype=torch.float16)  # Force fp16 as fallback
+                self.model_locations[name] = "gpu"
+                logger.info(f"Successfully loaded {name} with fp16 fallback")
+            except Exception as e2:
+                logger.error(f"Failed to load {name} even with fallback: {e2}")
+                raise e  # Re-raise original OOM error
     
     def auto_offload_if_needed(self):
         """Automatically offload models if memory usage is too high"""
@@ -100,10 +119,19 @@ class MemoryManager:
             if was_on_cpu:
                 self.load_model_to_gpu(name, device, dtype)
             yield self.models[name]
+        except Exception as e:
+            logger.error(f"Error in model_context for {name}: {e}")
+            # Emergency cleanup
+            self.clear_memory()
+            raise
         finally:
             # Offload back to CPU if it was originally there and offloading is enabled
             if was_on_cpu and self.enable_offload:
-                self.offload_model_to_cpu(name)
+                try:
+                    self.offload_model_to_cpu(name)
+                except Exception as e:
+                    logger.warning(f"Failed to offload {name}: {e}")
+                    # Continue anyway - don't let cleanup failures break the pipeline
     
     def clear_memory(self):
         """Clear GPU memory cache"""

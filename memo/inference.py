@@ -148,15 +148,15 @@ def main(args=None):
     logger.info("Loading VAE...")
     vae = AutoencoderKL.from_pretrained(config.vae).to(device=device, dtype=weight_dtype)
     vae.requires_grad_(False).eval()
-    memory_manager.register_model("vae", vae)
+    # VAE must stay on GPU for decode_latents - do NOT register for offloading
     
     logger.info("Loading reference_net...")
     reference_net = UNet2DConditionModel.from_pretrained(
         config.model_name_or_path, subfolder="reference_net", use_safetensors=True
     )
     reference_net.requires_grad_(False).eval()
-    # Move to GPU initially, but register for potential offloading
-    reference_net.to(device=device, dtype=weight_dtype)
+    # Start on CPU for memory management
+    reference_net.to("cpu")
     memory_manager.register_model("reference_net", reference_net)
     
     logger.info("Loading diffusion_net...")
@@ -164,6 +164,7 @@ def main(args=None):
         config.model_name_or_path, subfolder="diffusion_net", use_safetensors=True
     )
     diffusion_net.requires_grad_(False).eval()
+    # Keep diffusion_net on GPU as it's used throughout inference
     diffusion_net.to(device=device, dtype=weight_dtype)
     memory_manager.register_model("diffusion_net", diffusion_net)
     
@@ -172,7 +173,8 @@ def main(args=None):
         config.model_name_or_path, subfolder="image_proj", use_safetensors=True
     )
     image_proj.requires_grad_(False).eval()
-    image_proj.to(device=device, dtype=weight_dtype)
+    # Start on CPU for memory management
+    image_proj.to("cpu")
     memory_manager.register_model("image_proj", image_proj)
     
     logger.info("Loading audio_proj...")
@@ -180,7 +182,8 @@ def main(args=None):
         config.model_name_or_path, subfolder="audio_proj", use_safetensors=True
     )
     audio_proj.requires_grad_(False).eval()
-    audio_proj.to(device=device, dtype=weight_dtype)
+    # Start on CPU for memory management
+    audio_proj.to("cpu")
     memory_manager.register_model("audio_proj", audio_proj)
     
     # Check memory usage and auto-offload if needed
@@ -253,19 +256,14 @@ def main(args=None):
             )
         ]
 
-        # Ensure critical models are on GPU before inference
+        # Sequential model loading for memory safety
         if memory_manager.enable_offload:
-            memory_manager.load_model_to_gpu("diffusion_net", device, weight_dtype)
+            # Load models needed for this inference step
             memory_manager.load_model_to_gpu("image_proj", device, weight_dtype)
-            # audio_proj might be on CPU - load it temporarily if needed
-            if "audio_proj" in memory_manager.offload_models:
-                memory_manager.load_model_to_gpu("audio_proj", device, weight_dtype)
-        
-        # Check memory before inference
-        memory_usage = memory_manager.get_gpu_memory_usage_gb()
-        if memory_usage > memory_manager.threshold_gb * 0.9:  # 90% of threshold
-            logger.warning(f"High GPU memory usage ({memory_usage:.2f}GB) before clip {t}")
-            memory_manager.auto_offload_if_needed()
+            
+            # Only load reference_net on first step
+            if t == 0:
+                memory_manager.load_model_to_gpu("reference_net", device, weight_dtype)
         
         pipeline_output = pipeline(
             ref_image=pixel_values_ref_img,
@@ -282,9 +280,15 @@ def main(args=None):
             is_new_audio=t == 0,
         )
         
-        # Optionally offload audio_proj back to CPU after use
-        if memory_manager.enable_offload and "audio_proj" in memory_manager.offload_models:
-            memory_manager.offload_model_to_cpu("audio_proj")
+        # Sequential cleanup - offload models after use
+        if memory_manager.enable_offload:
+            # Offload reference_net after first clip (only needed once)
+            if t == 0:
+                memory_manager.offload_model_to_cpu("reference_net")
+            
+            # Keep image_proj on GPU for next clip unless it's the last one
+            if t == num_clips - 1:  # Last clip
+                memory_manager.offload_model_to_cpu("image_proj")
             
         # Clear cache after each clip
         memory_manager.clear_memory()

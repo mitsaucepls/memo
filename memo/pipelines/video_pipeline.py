@@ -174,10 +174,19 @@ class VideoPipeline(DiffusionPipeline):
 
         # prepare clip image embeddings
         clip_image_embeds = face_emb
-        clip_image_embeds = clip_image_embeds.to(self.image_proj.device, self.image_proj.dtype)
-
-        encoder_hidden_states = self.image_proj(clip_image_embeds)
-        uncond_encoder_hidden_states = self.image_proj(torch.zeros_like(clip_image_embeds))
+        
+        # Ensure image_proj is on the right device
+        if hasattr(self, 'memory_manager') and self.memory_manager.enable_offload:
+            # Use memory manager to ensure model is on GPU
+            with self.memory_manager.model_context("image_proj", device, clip_image_embeds.dtype) as image_proj_model:
+                clip_image_embeds = clip_image_embeds.to(image_proj_model.device, image_proj_model.dtype)
+                encoder_hidden_states = image_proj_model(clip_image_embeds)
+                uncond_encoder_hidden_states = image_proj_model(torch.zeros_like(clip_image_embeds))
+        else:
+            # Standard path
+            clip_image_embeds = clip_image_embeds.to(self.image_proj.device, self.image_proj.dtype)
+            encoder_hidden_states = self.image_proj(clip_image_embeds)
+            uncond_encoder_hidden_states = self.image_proj(torch.zeros_like(clip_image_embeds))
 
         if do_classifier_free_guidance:
             encoder_hidden_states = torch.cat([uncond_encoder_hidden_states, encoder_hidden_states], dim=0)
@@ -225,12 +234,23 @@ class VideoPipeline(DiffusionPipeline):
                 t = timesteps[i]
                 # Forward reference image
                 if i == 0:
-                    ref_features = self.reference_net(
-                        ref_image_latents.repeat((2 if do_classifier_free_guidance else 1), 1, 1, 1),
-                        torch.zeros_like(t),
-                        encoder_hidden_states=encoder_hidden_states,
-                        return_dict=False,
-                    )
+                    if hasattr(self, 'memory_manager') and self.memory_manager.enable_offload:
+                        # Use memory manager to ensure reference_net is on GPU
+                        with self.memory_manager.model_context("reference_net", device, ref_image_latents.dtype) as ref_net:
+                            ref_features = ref_net(
+                                ref_image_latents.repeat((2 if do_classifier_free_guidance else 1), 1, 1, 1),
+                                torch.zeros_like(t),
+                                encoder_hidden_states=encoder_hidden_states,
+                                return_dict=False,
+                            )
+                    else:
+                        # Standard path
+                        ref_features = self.reference_net(
+                            ref_image_latents.repeat((2 if do_classifier_free_guidance else 1), 1, 1, 1),
+                            torch.zeros_like(t),
+                            encoder_hidden_states=encoder_hidden_states,
+                            return_dict=False,
+                        )
 
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents

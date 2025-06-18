@@ -1,18 +1,18 @@
 resolution: 256  # Reduced from 512
-num_generated_frames_per_clip: 8  # Reduced from 16
+num_generated_frames_per_clip: 4  # Further reduced for memory safety
 fps: 30
-num_init_past_frames: 8  # Reduced from 16
-num_past_frames: 8  # Reduced from 16
-inference_steps: 15  # Reduced from 20
+num_init_past_frames: 4  # Further reduced
+num_past_frames: 4  # Further reduced
+inference_steps: 10  # Further reduced for memory safety
 cfg_scale: 3.5
 weight_dtype: fp16  # Changed from bf16 to fp16 for less memory
 enable_xformers_memory_efficient_attention: true
 
 # Memory management options - ENABLED
 enable_cpu_offload: true
-cpu_offload_threshold_gb: 12.0  # Lower threshold for earlier offloading
-offload_models: ["reference_net", "audio_proj"]  # Models to offload first
-force_sequential: false  # Force models to run sequentially to save memory
+cpu_offload_threshold_gb: 8.0  # Even lower threshold for safety
+offload_models: ["reference_net", "image_proj", "audio_proj"]  # All non-essential models
+force_sequential: true  # Force sequential for maximum memory safety
 
 model_name_or_path: memoavatar/memo
 # model_name_or_path: checkpoints
