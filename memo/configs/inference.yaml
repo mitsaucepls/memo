@@ -8,6 +8,12 @@ cfg_scale: 3.5
 weight_dtype: bf16
 enable_xformers_memory_efficient_attention: true
 
+# Memory management options
+enable_cpu_offload: false
+cpu_offload_threshold_gb: 14.0  # Offload to CPU when GPU memory usage exceeds this
+offload_models: ["reference_net", "audio_proj"]  # Models to offload first
+force_sequential: false  # Force models to run sequentially to save memory
+
 model_name_or_path: memoavatar/memo
 # model_name_or_path: checkpoints
 vae: stabilityai/sd-vae-ft-mse

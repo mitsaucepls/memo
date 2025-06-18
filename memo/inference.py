@@ -16,6 +16,7 @@ from memo.models.unet_3d import UNet3DConditionModel
 from memo.pipelines.video_pipeline import VideoPipeline
 from memo.utils.audio_utils import extract_audio_emotion_labels, preprocess_audio, resample_audio
 from memo.utils.vision_utils import preprocess_image, tensor_to_video
+from memo.utils.memory_utils import setup_memory_manager
 
 
 logger = logging.getLogger("memo")
@@ -56,6 +57,9 @@ def main(args=None):
 
     logger.info(f"Loading config from {args.config}")
     config = OmegaConf.load(args.config)
+    
+    # Setup memory manager
+    memory_manager = setup_memory_manager(config)
 
     # Download face analysis and vocal separator models, if they do not exist
     face_analysis = os.path.join(config.misc_model_dir, "misc/face_analysis")
@@ -139,25 +143,49 @@ def main(args=None):
     )
 
     logger.info("Loading models")
+    
+    # Load models with memory management
+    logger.info("Loading VAE...")
     vae = AutoencoderKL.from_pretrained(config.vae).to(device=device, dtype=weight_dtype)
+    vae.requires_grad_(False).eval()
+    memory_manager.register_model("vae", vae)
+    
+    logger.info("Loading reference_net...")
     reference_net = UNet2DConditionModel.from_pretrained(
         config.model_name_or_path, subfolder="reference_net", use_safetensors=True
     )
+    reference_net.requires_grad_(False).eval()
+    # Move to GPU initially, but register for potential offloading
+    reference_net.to(device=device, dtype=weight_dtype)
+    memory_manager.register_model("reference_net", reference_net)
+    
+    logger.info("Loading diffusion_net...")
     diffusion_net = UNet3DConditionModel.from_pretrained(
         config.model_name_or_path, subfolder="diffusion_net", use_safetensors=True
     )
+    diffusion_net.requires_grad_(False).eval()
+    diffusion_net.to(device=device, dtype=weight_dtype)
+    memory_manager.register_model("diffusion_net", diffusion_net)
+    
+    logger.info("Loading image_proj...")
     image_proj = ImageProjModel.from_pretrained(
         config.model_name_or_path, subfolder="image_proj", use_safetensors=True
     )
+    image_proj.requires_grad_(False).eval()
+    image_proj.to(device=device, dtype=weight_dtype)
+    memory_manager.register_model("image_proj", image_proj)
+    
+    logger.info("Loading audio_proj...")
     audio_proj = AudioProjModel.from_pretrained(
         config.model_name_or_path, subfolder="audio_proj", use_safetensors=True
     )
-
-    vae.requires_grad_(False).eval()
-    reference_net.requires_grad_(False).eval()
-    diffusion_net.requires_grad_(False).eval()
-    image_proj.requires_grad_(False).eval()
     audio_proj.requires_grad_(False).eval()
+    audio_proj.to(device=device, dtype=weight_dtype)
+    memory_manager.register_model("audio_proj", audio_proj)
+    
+    # Check memory usage and auto-offload if needed
+    memory_manager.auto_offload_if_needed()
+    memory_manager.print_memory_stats()
 
     # Enable memory-efficient attention for xFormers
     if config.enable_xformers_memory_efficient_attention:
@@ -184,6 +212,9 @@ def main(args=None):
         image_proj=image_proj,
     )
     pipeline.to(device=device, dtype=weight_dtype)
+    
+    # Set memory manager in pipeline for dynamic loading/offloading
+    pipeline.memory_manager = memory_manager
 
     video_frames = []
     num_clips = audio_emb.shape[0] // config.num_generated_frames_per_clip
@@ -222,6 +253,20 @@ def main(args=None):
             )
         ]
 
+        # Ensure critical models are on GPU before inference
+        if memory_manager.enable_offload:
+            memory_manager.load_model_to_gpu("diffusion_net", device, weight_dtype)
+            memory_manager.load_model_to_gpu("image_proj", device, weight_dtype)
+            # audio_proj might be on CPU - load it temporarily if needed
+            if "audio_proj" in memory_manager.offload_models:
+                memory_manager.load_model_to_gpu("audio_proj", device, weight_dtype)
+        
+        # Check memory before inference
+        memory_usage = memory_manager.get_gpu_memory_usage_gb()
+        if memory_usage > memory_manager.threshold_gb * 0.9:  # 90% of threshold
+            logger.warning(f"High GPU memory usage ({memory_usage:.2f}GB) before clip {t}")
+            memory_manager.auto_offload_if_needed()
+        
         pipeline_output = pipeline(
             ref_image=pixel_values_ref_img,
             audio_tensor=audio_tensor,
@@ -236,6 +281,13 @@ def main(args=None):
             generator=generator,
             is_new_audio=t == 0,
         )
+        
+        # Optionally offload audio_proj back to CPU after use
+        if memory_manager.enable_offload and "audio_proj" in memory_manager.offload_models:
+            memory_manager.offload_model_to_cpu("audio_proj")
+            
+        # Clear cache after each clip
+        memory_manager.clear_memory()
 
         video_frames.append(pipeline_output.videos)
 

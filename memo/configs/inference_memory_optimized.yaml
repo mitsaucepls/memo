@@ -1,0 +1,22 @@
+resolution: 256  # Reduced from 512
+num_generated_frames_per_clip: 8  # Reduced from 16
+fps: 30
+num_init_past_frames: 8  # Reduced from 16
+num_past_frames: 8  # Reduced from 16
+inference_steps: 15  # Reduced from 20
+cfg_scale: 3.5
+weight_dtype: fp16  # Changed from bf16 to fp16 for less memory
+enable_xformers_memory_efficient_attention: true
+
+# Memory management options - ENABLED
+enable_cpu_offload: true
+cpu_offload_threshold_gb: 12.0  # Lower threshold for earlier offloading
+offload_models: ["reference_net", "audio_proj"]  # Models to offload first
+force_sequential: false  # Force models to run sequentially to save memory
+
+model_name_or_path: memoavatar/memo
+# model_name_or_path: checkpoints
+vae: stabilityai/sd-vae-ft-mse
+wav2vec: facebook/wav2vec2-base-960h
+emotion2vec: iic/emotion2vec_plus_large
+misc_model_dir: checkpoints
