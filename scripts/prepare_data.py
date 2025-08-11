@@ -63,7 +63,7 @@ class VideoProcessor:
             logger.info(f"Error processing video {input_path}: {e}")
             if "video_reader" in locals():
                 del video_reader
-            return None, None, None
+            return None, None
 
         del video_reader
         return face_emb, video_length
